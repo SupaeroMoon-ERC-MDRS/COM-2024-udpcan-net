@@ -204,11 +204,12 @@ uint32_t Net::readBuf(){
             if(head.frag_ref == 0){
                 std::lock_guard lk(inbuf_mtx);
                 buf.emplace_back().addr = addr;
+                buf.back().head = head;
                 buf.back().buf.resize(nread - sizeof(Header));
-                std::copy(buffer.cbegin() + sizeof(Header), buffer.cbegin() + nread, buf.back().buf.begin());
+                std::copy(buffer.cbegin() + sizeof(Header), buffer.cend(), buf.back().buf.begin());
             }
             else{
-                processFrag(buffer);
+                processFrag(buffer, addr);
             }
         }
         #ifdef _WIN32
@@ -309,20 +310,114 @@ uint32_t Net::sendTo(const std::vector<uint8_t>& bytes, const sockaddr_in addr){
 }
 
 uint32_t Net::readMsg(){
-    // handle connections based on header
-    // remove processed no-payload msgs
-    // check frag buffer, if stale, remove
+    std::vector<uint32_t> remove_indexes;
+    uint32_t i = 0;
+
+    for(const RecvPacket& pack : buf){
+        if(pack.head.payload_length == 0){
+            remove_indexes.insert(remove_indexes.begin(), i);
+        }
+
+        uint8_t req = pack.head.getReq();
+
+        if(req == 1){
+            subs.push_back({pack.addr, pack.head.getType()});
+        }
+
+        else if(req == 2){
+            std::vector<uint8_t> search(sizeof(sockaddr_in));  // TODO this is horrible
+            memcpy(search.data(), &pack.addr, sizeof(sockaddr_in));
+            auto it = std::find_if(pubs_unconfirmed.begin(), pubs_unconfirmed.end(), [&search](sockaddr_in& conn){
+                std::vector<uint8_t> arr(sizeof(sockaddr_in));
+                memcpy(arr.data(), &conn, sizeof(sockaddr_in));
+                return search == arr;
+            });
+            pubs_unconfirmed.erase(it);
+            pubs.push_back({pack.addr, pack.head.getType()});
+        }
+
+        else if(req == 3){            
+            std::vector<uint8_t> search(sizeof(sockaddr_in));  // TODO this is horrible
+            memcpy(search.data(), &pack.addr, sizeof(sockaddr_in));
+
+            auto it = std::find_if(pubs.begin(), pubs.end(), [&search](std::pair<sockaddr_in, uint8_t>& conn){
+                std::vector<uint8_t> arr(sizeof(sockaddr_in));
+                memcpy(arr.data(), &conn.first, sizeof(sockaddr_in));
+                return search == arr;
+            });
+            pubs.erase(it);
+
+            it = std::find_if(subs.begin(), subs.end(), [&search](std::pair<sockaddr_in, uint8_t>& conn){
+                std::vector<uint8_t> arr(sizeof(sockaddr_in));
+                memcpy(arr.data(), &conn.first, sizeof(sockaddr_in));
+                return search == arr;
+            });
+            subs.erase(it);
+        }
+        
+        i++;
+    }
+
+    for(const uint32_t pos : remove_indexes){
+        buf.erase(buf.begin() + pos);
+    }
+    
+    remove_indexes.clear();
+    uint64_t now = std::chrono::system_clock::now().time_since_epoch() / std::chrono::milliseconds(1);
+    for(uint32_t i = 0; i < frag_buf.size(); i++){
+        if(now - frag_buf[i].second > FRAG_STALE_MS){
+            remove_indexes.insert(remove_indexes.begin(), i);
+        }
+    }
+
+    for(const uint32_t pos : remove_indexes){
+        frag_buf.erase(frag_buf.begin() + pos);
+    }
+
+    return NET_E_SUCCESS;
 }
 
-uint32_t Net::processFrag(const std::vector<uint8_t>& bytes){
-    // check if frag ref exists for this addr, create holder if not
-    // put it in the appropriate holder
-    // update holder last update time
-    // check if holder is complete, then lock inbuf_mtx put it in buf, clear this release lock
+uint32_t Net::processFrag(const std::vector<uint8_t>& bytes, const sockaddr_in& addr){
+    Header head = *(Header*)bytes.data();
+
+    uint32_t pos = 0;
+    for(const std::pair<std::vector<RecvPacket>, uint64_t>& frag : frag_buf){
+        if(frag.first.front().head.frag_ref == head.frag_ref){
+            break;
+        }
+        pos++;
+    }
+
+    if(pos >= frag_buf.size()){
+        frag_buf.push_back({{}, 0});
+    }
+    
+    frag_buf[pos].first.emplace_back().addr = addr;
+    frag_buf[pos].first.back().head = head;
+    frag_buf[pos].first.back().buf.resize(bytes.size() - sizeof(Header));
+    std::copy(bytes.cbegin() + sizeof(Header), bytes.cend(), frag_buf[pos].first.back().buf.begin());
+
+    frag_buf[pos].second = std::chrono::system_clock::now().time_since_epoch() / std::chrono::milliseconds(1);
+
+    bool end_found = false;
+    uint8_t end_pos = 0;
+    for(const RecvPacket& pack : frag_buf[pos].first){
+        if(!pack.head.more_frag){
+            end_found = true;
+            end_pos = pack.head.frag_index;
+        }
+    }
+
+    if(end_found && (end_pos + 1) == frag_buf[pos].first.size()){
+        // sort RecvPackets into order based on frag_index
+        // unify these frags into a RecvPacket
+        // pop this holder
+        // lock inbuf_mtx put it buf and release lock
+    }
 }
 
 uint32_t Net::prepareFrag(const std::vector<uint8_t>& bytes, const std::vector<std::vector<uint8_t>>& frag){
-    // split bytes into 1000 long sections
+    // split bytes into FRAG_SIZE long sections
     // put a header on top of each section
-    //     push, frag data, type etc
+    //     push, frag ref, frag index, type, req etc
 }

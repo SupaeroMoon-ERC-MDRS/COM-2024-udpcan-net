@@ -34,6 +34,8 @@
 #define NET_E_UNINITIALIZED (uint32_t)1030
 
 #define BROADCAST "255.255.255.255"
+#define FRAG_SIZE uint32_t(1000)
+#define FRAG_STALE_MS uint32_t(5000)
 
 struct RecvPacket{
     sockaddr_in addr;
@@ -61,6 +63,7 @@ class Net{
         std::vector<std::pair<uint8_t, uint32_t>> expect_can_ids;
         std::vector<std::pair<sockaddr_in, uint8_t>> subs;
         std::vector<std::pair<sockaddr_in, uint8_t>> pubs;
+        std::vector<sockaddr_in> pubs_unconfirmed;
         
         std::vector<std::pair<std::vector<RecvPacket>, uint64_t>> frag_buf;
         std::vector<RecvPacket> buf;
@@ -76,7 +79,7 @@ class Net{
         uint32_t readBuf();
         uint32_t readMsg();
 
-        uint32_t processFrag(const std::vector<uint8_t>& bytes);
+        uint32_t processFrag(const std::vector<uint8_t>& bytes, const sockaddr_in& addr);
         uint32_t prepareFrag(const std::vector<uint8_t>& bytes, const std::vector<std::vector<uint8_t>>& frag);
 
         uint32_t send(const std::vector<uint8_t>& bytes); // thrsafety
