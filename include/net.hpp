@@ -60,7 +60,9 @@ class Net{
         bool initialized;
         bool need_reset;
         uint16_t expect_dbc_version;
-        std::vector<std::pair<uint8_t, uint32_t>> expect_can_ids;
+        uint8_t frag_ref_cycle = 1;
+        uint8_t node_type;
+
         std::vector<std::pair<sockaddr_in, uint8_t>> subs;
         std::vector<std::pair<sockaddr_in, uint8_t>> pubs;
         std::vector<sockaddr_in> pubs_unconfirmed;
@@ -80,7 +82,7 @@ class Net{
         uint32_t readMsg();
 
         uint32_t processFrag(const std::vector<uint8_t>& bytes, const sockaddr_in& addr);
-        uint32_t prepareFrag(const std::vector<uint8_t>& bytes, const std::vector<std::vector<uint8_t>>& frag);
+        uint32_t prepareFrag(const std::vector<uint8_t>& bytes, std::vector<std::vector<uint8_t>>& frag);
 
         uint32_t send(const std::vector<uint8_t>& bytes); // thrsafety
         uint32_t send(const Header& head); // thrsafety
@@ -89,8 +91,8 @@ class Net{
         Net();
         ~Net();
 
-        uint32_t init(const uint16_t dbc_version, const uint16_t port);
-        uint32_t reset(const uint16_t dbc_version, const uint16_t port);
+        uint32_t init(const uint16_t dbc_version, const uint16_t port, const uint8_t type);
+        uint32_t reset(const uint16_t dbc_version, const uint16_t port, const uint8_t type);
         uint32_t shutdown();
 
         bool isInitialized(){ // TODO figure out why this cant be const

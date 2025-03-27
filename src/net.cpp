@@ -20,8 +20,9 @@ Net::~Net(){
     shutdown();
 }
 
-uint32_t Net::init(const uint16_t dbc_version, const uint16_t port){
+uint32_t Net::init(const uint16_t dbc_version, const uint16_t port, const uint8_t type){
     expect_dbc_version = dbc_version;
+    node_type = type;
 
     socket_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if(socket_fd < 0){
@@ -95,9 +96,9 @@ uint32_t Net::shutdown(){
     return NET_E_SUCCESS;
 }
 
-uint32_t Net::reset(const uint16_t dbc_version, const uint16_t port){
+uint32_t Net::reset(const uint16_t dbc_version, const uint16_t port, const uint8_t node_type){
     shutdown();
-    uint32_t res = init(dbc_version, port);
+    uint32_t res = init(dbc_version, port, node_type);
     need_reset = false;
     return res;
 }
@@ -401,23 +402,69 @@ uint32_t Net::processFrag(const std::vector<uint8_t>& bytes, const sockaddr_in& 
 
     bool end_found = false;
     uint8_t end_pos = 0;
+    uint32_t total_len = 0;
     for(const RecvPacket& pack : frag_buf[pos].first){
         if(!pack.head.more_frag){
             end_found = true;
             end_pos = pack.head.frag_index;
         }
+        total_len += pack.buf.size();
     }
 
     if(end_found && (end_pos + 1) == frag_buf[pos].first.size()){
-        // sort RecvPackets into order based on frag_index
-        // unify these frags into a RecvPacket
-        // pop this holder
-        // lock inbuf_mtx put it buf and release lock
+        // insertion sort is best here since this can be considered 'almost' sorted
+        auto first = frag_buf[pos].first.begin();
+        auto last = frag_buf[pos].first.end();
+        for (auto it = first; it != last; ++it)
+            std::rotate(std::upper_bound(first, it, *it, [](const RecvPacket& a, const RecvPacket& b){
+                return a.head.frag_index < b.head.frag_index;
+            }), it, std::next(it));
+            
+        {
+            std::lock_guard lk(inbuf_mtx);
+            
+            buf.emplace_back().addr = addr;
+            buf.back().head = frag_buf[pos].first.back().head;
+            buf.back().buf.reserve(total_len);
+
+            for(const RecvPacket& pack : frag_buf[pos].first){
+                std::copy(pack.buf.cbegin(), pack.buf.cend(), std::back_inserter(buf.back().buf));
+            }
+        }
+
+        frag_buf.erase(frag_buf.begin() + pos);
     }
+    return NET_E_SUCCESS;
 }
 
-uint32_t Net::prepareFrag(const std::vector<uint8_t>& bytes, const std::vector<std::vector<uint8_t>>& frag){
-    // split bytes into FRAG_SIZE long sections
-    // put a header on top of each section
-    //     push, frag ref, frag index, type, req etc
+uint32_t Net::prepareFrag(const std::vector<uint8_t>& bytes, std::vector<std::vector<uint8_t>>& frag){
+    uint32_t frag_num = std::ceil((float)bytes.size() / (float)FRAG_SIZE);
+    frag.resize(frag_num);
+
+    for(uint32_t i = 0; i < frag_num - 1; i++){
+        frag[i].resize(FRAG_SIZE + sizeof(Header));
+        std::copy(bytes.cbegin() + i * FRAG_SIZE, bytes.cbegin() + (i + 1) * FRAG_SIZE, frag[i].begin() + sizeof(Header));
+    }
+
+    frag[frag_num - 1].resize(bytes.size() - ((frag_num - 1) * FRAG_SIZE) + sizeof(Header));
+    std::copy(bytes.cbegin() + (frag_num - 1) * FRAG_SIZE, bytes.cend(), frag[frag_num - 1].begin() + sizeof(Header));
+
+    uint8_t frag_ref = ++frag_ref_cycle;
+    frag_ref_cycle += (!frag_ref_cycle); // cant have this at 0
+
+    for(uint32_t i = 0; i < frag_num; i++){
+        Header head;
+        head.dbc_version = expect_dbc_version;
+        head.type_0 = node_type & 1;
+        head.type_1 = node_type & 2;
+        head.req_0 = false;
+        head.req_1 = false;
+        head.more_frag = i != (frag_num - 1);
+        head.frag_ref = frag_ref;
+        head.frag_index = i;
+
+        *(Header *)frag[i].data() = head;
+    }
+
+    return NET_E_SUCCESS;
 }
