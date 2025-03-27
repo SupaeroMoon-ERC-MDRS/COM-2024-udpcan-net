@@ -462,6 +462,7 @@ uint32_t Net::prepareFrag(const std::vector<uint8_t>& bytes, std::vector<std::ve
         head.more_frag = i != (frag_num - 1);
         head.frag_ref = frag_ref;
         head.frag_index = i;
+        head.payload_length = frag[i].size() - sizeof(Header);
 
         *(Header *)frag[i].data() = head;
     }
